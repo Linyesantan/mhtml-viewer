@@ -2,7 +2,7 @@
 
 在手机浏览器里查看 MHTML（.mht / .mhtml）网页存档的本地小工具。
 
-Android 上的 Chrome 内核浏览器基本打不开 `.mhtml` 单文件网页存档（`file://` + `message/rfc822` 会被拒），传到手机上的存档页面没法看。本项目用一个纯前端解析器 + Termux 本地小服务解决这个问题：
+Android 上的 Chrome 不支持渲染 MHTML 存档：即使在文件管理器里点开 `.mhtml` 选择用 Chrome 打开，它也不会把 `message/rfc822` 识别成网页，只会当作未知文件直接跳转下载，存档在手机上根本没法看。本项目用一个纯前端解析器 + Termux 本地小服务解决这个问题：
 
 - **index.html** — 查看器本体，纯前端，零依赖。内置 MIME 多段解析、quoted-printable / base64 解码、`Content-Location` 与 `cid:` 资源映射，把存档里的 HTML / CSS / 图片重写成 blob URL 后在 sandbox iframe 中渲染
 - **server.js** — 无依赖的 node 静态服务器（仅用于让浏览器以 `http://` 打开查看器）
