@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MHTML / 网页存档查看器</title>
+<style>
+:root{ --accent:#4f46e5; --bg:#f5f6f8; --card:#fff; --text:#1f2937; --muted:#6b7280; --border:#e5e7eb; }
+@media (prefers-color-scheme: dark){
+  :root{ --bg:#111827; --card:#1f2430; --text:#e5e7eb; --muted:#9ca3af; --border:#374151; }
+}
+*{ box-sizing:border-box; }
+body{ margin:0; font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans SC",sans-serif; background:var(--bg); color:var(--text); min-height:100vh; }
+header{ padding:12px 18px; background:var(--card); border-bottom:1px solid var(--border); display:flex; align-items:center; gap:10px; }
+header h1{ font-size:17px; margin:0; font-weight:600; }
+header .logo{ width:26px; height:26px; border-radius:7px; background:var(--accent); color:#fff; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:700; }
+main{ max-width:960px; margin:0 auto; padding:16px; }
+[hidden]{ display:none !important; }
+.card{ background:var(--card); border:1px solid var(--border); border-radius:14px; padding:30px 20px; text-align:center; }
+#dropZone{ transition:background .15s, outline .15s; }
+#dropZone.dragover{ outline:2px dashed var(--accent); outline-offset:-8px; background:rgba(79,70,229,0.08); }
+#dropZone h2{ margin:10px 0 6px; font-size:18px; }
+#dropZone p{ margin:4px 0 20px; color:var(--muted); font-size:13px; line-height:1.6; }
+.btn{ display:inline-flex; align-items:center; gap:6px; border:0; border-radius:10px; padding:10px 18px; font-size:14px; cursor:pointer; background:var(--accent); color:#fff; }
+.btn.secondary{ background:transparent; color:var(--text); border:1px solid var(--border); }
+#toolbar{ display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; padding:10px 12px; background:var(--card); border:1px solid var(--border); border-radius:12px 12px 0 0; font-size:13px; }
+#toolbar .spacer{ flex:1; }
+#fileInfo{ min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+#fileInfo a{ color:var(--accent); }
+#fileInfo .note{ color:var(--muted); margin-left:6px; }
+#frameWrap{ height:calc(100vh - 178px); min-height:420px; border:1px solid var(--border); border-top:0; border-radius:0 0 12px 12px; overflow:hidden; background:#fff; }
+#frameWrap iframe{ width:100%; height:100%; border:0; display:block; }
+label.toggle{ display:inline-flex; align-items:center; gap:6px; color:var(--muted); cursor:pointer; user-select:none; white-space:nowrap; }
+#status{ margin-top:12px; font-size:13px; color:var(--muted); min-height:1em; word-break:break-all; }
+#status.error{ color:#dc2626; }
+input[type=file]{ display:none; }
+@media (max-width:600px){
+  #fileInfo{ flex-basis:100%; white-space:normal; }
+}
+</style>
+</head>
+<body>
+<header><span class="logo">M</span><h1>MHTML / 网页存档查看器</h1></header>
+<main>
+  <section id="picker">
+    <div class="card" id="dropZone">
+      <h2>选择本地文件打开</h2>
+      <p>支持浏览器保存的单文件网页 (.mht / .mhtml)、邮件 (.eml)、普通网页 (.html / .htm) 和文本 (.txt)<br>你也可以把文件直接拖拽到此处</p>
+      <button class="btn" id="pickBtn" type="button">选择文件</button>
+      <input type="file" id="fileInput" accept=".mht,.mhtml,.eml,.html,.htm,.xhtml,.txt,message/rfc822,multipart/related,text/html,text/plain">
+    </div>
+  </section>
+  <section id="viewer" hidden>
+    <div id="toolbar">
+      <div id="fileInfo"></div>
+      <div class="spacer"></div>
+      <label class="toggle" title="在存档页面中运行 JavaScript（页面来自本地文件，脚本将与本页同源，请注意安全）"><input type="checkbox" id="jsToggle">启用脚本</label>
+      <button class="btn secondary" id="openTab" type="button">新标签页打开</button>
+      <button class="btn secondary" id="closeBtn" type="button">关闭</button>
+    </div>
+    <div id="frameWrap"></div>
+  </section>
+  <div id="status"></div>
+</main>
+
+<script id="mime-core">
+function latin1ToString(bytes){
+  const out = [];
+  const chunk = 32768;
+  for(let i = 0; i < bytes.length; i += chunk){
+    out.push(String.fromCharCode.apply(null, bytes.subarray(i, i + chunk)));
+  }
+  return out.join('');
+}
+function stringToLatin1Bytes(s){
+  const b = new Uint8Array(s.length);
+  for(let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i) & 0xFF;
+  return b;
+}
+function decodeQuotedPrintable(s){
+  return s.replace(/=(?:\r\n|\n|\r)/g, '').replace(/=([0-9A-Fa-f]{2})/g, function(m, h){ return String.fromCharCode(parseInt(h, 16)); });
+}
+function decodeBase64ToBytes(s){
+  const clean = s.replace(/[^A-Za-z0-9+/=]/g, '');
+  const bin = atob(clean);
+  const b = new Uint8Array(bin.length);
+  for(let i = 0; i < bin.length; i++) b[i] = bin.charCodeAt(i);
+  return b;
+}
+function findBoundary(raw){
+  const headEnd = raw.search(/\r?\n\r?\n/);
+  const head = headEnd === -1 ? raw.slice(0, 16384) : raw.slice(0, headEnd);
+  const m = head.match(/boundary\s*=\s*(?:"([^"]*)"|([^";\r\n]*))/i);
+  if(!m) return null;
+  const b = (m[1] !== undefined ? m[1] : m[2]).trim();
+  return b || null;
+}
+function splitMimeParts(raw, boundary){
+  const delim = '--' + boundary;
+  const parts = [];
+  let searchFrom = 0;
+  let start = null;
+  while(searchFrom <= raw.length){
+    const pos = raw.indexOf(delim, searchFrom);
+    if(pos === -1) break;
+    const prev = pos > 0 ? raw[pos - 1] : '';
+    const atLineStart = pos === 0 || prev === '\n' || (prev === '\r' && (pos - 2 < 0 || raw[pos - 2] !== '\n'));
+    if(!atLineStart){ searchFrom = pos + delim.length; continue; }
+    let after = pos + delim.length;
+    let dashEnd = after;
+    while(dashEnd < raw.length && raw[dashEnd] === '-') dashEnd++;
+    const isFinal = dashEnd - after >= 2;
+    after = dashEnd;
+    let lineEnd = after;
+    while(lineEnd < raw.length && (raw[lineEnd] === ' ' || raw[lineEnd] === '\t')) lineEnd++;
+    let newlineLen = 0;
+    if(raw[lineEnd] === '\r' && raw[lineEnd + 1] === '\n') newlineLen = 2;
+    else if(raw[lineEnd] === '\n') newlineLen = 1;
+    if(newlineLen === 0 && lineEnd < raw.length){ searchFrom = pos + delim.length; continue; }
+    if(start !== null){
+      let end = pos;
+      if(end > start && raw[end - 1] === '\n') end--;
+      if(end > start && raw[end - 1] === '\r') end--;
+      parts.push(raw.slice(start, end));
+    }
+    if(isFinal){ start = null; break; }
+    start = lineEnd + newlineLen;
+    searchFrom = start;
+  }
+  if(start !== null){
+    let end = raw.length;
+    while(end > start && (raw[end - 1] === '\n' || raw[end - 1] === '\r')) end--;
+    parts.push(raw.slice(start, end));
+  }
+  return parts;
+}
+function parseMimePart(partStr){
+  const m = partStr.match(/\r?\n\r?\n/);
+  const headerText = m ? partStr.slice(0, m.index) : partStr;
+  const body = m ? partStr.slice(m.index + m[0].length) : '';
+  const lines = headerText.split(/\r?\n/);
+  const pairs = [];
+  for(const line of lines){
+    if(!line) continue;
+    if((line[0] === ' ' || line[0] === '\t') && pairs.length){ pairs[pairs.length - 1].value += ' ' + line.trim(); continue; }
+    const idx = line.indexOf(':');
+    if(idx > 0) pairs.push({ name: line.slice(0, idx).trim().toLowerCase(), value: line.slice(idx + 1).trim() });
+  }
+  const headers = {};
+  for(const p of pairs) headers[p.name] = p.value;
+  return { headers, body };
+}
+function parseContentType(ct){
+  const segs = String(ct || '').split(';');
+  const type = (segs.shift() || '').trim().toLowerCase();
+  const params = {};
+  for(const seg of segs){
+    const eq = seg.indexOf('=');
+    if(eq === -1) continue;
+    const k = seg.slice(0, eq).trim().toLowerCase();
+    let v = seg.slice(eq + 1).trim();
+    if(v.length > 1 && v[0] === '"' && v[v.length - 1] === '"') v = v.slice(1, -1);
+    params[k] = v;
+  }
+  return { type, params };
+}
+function isTextType(type){
+  if(!type) return false;
+  return type.startsWith('text/') || type.endsWith('+xml') || type.endsWith('+json') ||
+    ['application/json','application/javascript','application/x-javascript','application/xhtml+xml'].indexOf(type) !== -1;
+}
+function decodeBody(bodyStr, encoding, charset, isText){
+  let bytes;
+  const enc = String(encoding || '').trim().toLowerCase();
+  if(enc === 'base64'){
+    try { bytes = decodeBase64ToBytes(bodyStr); }
+    catch(e){ bytes = stringToLatin1Bytes(bodyStr); }
+  } else if(enc === 'quoted-printable'){
+    bytes = stringToLatin1Bytes(decodeQuotedPrintable(bodyStr));
+  } else {
+    bytes = stringToLatin1Bytes(bodyStr);
+  }
+  if(!isText) return { bytes, text: null };
+  let text = null;
+  if(charset){
+    try { text = new TextDecoder(charset, { fatal: false }).decode(bytes); } catch(e){}
+  }
+  if(text === null){
+    try { text = new TextDecoder('utf-8', { fatal: false }).decode(bytes); } catch(e){}
+  }
+  if(text === null) text = latin1ToString(bytes);
+  return { bytes, text };
+}
+function stripHash(u){
+  const i = u.indexOf('#');
+  return i === -1 ? u : u.slice(0, i);
+}
+function safeDecode(u){
+  try { return decodeURIComponent(u); } catch(e){ return null; }
+}
+function cidKey(v){
+  return String(v || '').trim().replace(/^<|>$/g, '').replace(/^cid:/i, '').toLowerCase();
+}
+function locationKeys(loc, base){
+  if(!loc) return [];
+  const keys = [];
+  function push(u){
+    if(!u) return;
+    const s = stripHash(u);
+    if(keys.indexOf(s) === -1) keys.push(s);
+    const d = safeDecode(s);
+    if(d && keys.indexOf(d) === -1) keys.push(d);
+  }
+  try { push(new URL(loc, base || undefined).href); } catch(e){}
+  push(loc);
+  return keys;
+}
+function resolveResource(u, base, urlMap, cidMap){
+  const s = String(u || '').trim();
+  if(!s) return null;
+  const lower = s.toLowerCase();
+  if(lower.indexOf('data:') === 0 || lower.indexOf('blob:') === 0 || lower.indexOf('javascript:') === 0 ||
+     lower.indexOf('about:') === 0 || s[0] === '#' || lower.indexOf('mailto:') === 0 || lower.indexOf('tel:') === 0) return null;
+  if(lower.indexOf('cid:') === 0) return cidMap.get(cidKey(s)) || null;
+  let abs = null;
+  try { abs = base ? new URL(s, base).href : s; } catch(e){ return null; }
+  const stripped = stripHash(abs);
+  const dec = safeDecode(stripped);
+  return urlMap.get(stripped) || (dec ? urlMap.get(dec) : null) || null;
+}
+function rewriteSrcset(v, base, urlMap, cidMap){
+  return v.split(/\s*,\s*/).map(function(part){
+    if(!part) return '';
+    const tokens = part.split(/\s+/);
+    const mapped = resolveResource(tokens[0], base, urlMap, cidMap);
+    if(mapped) tokens[0] = mapped;
+    return tokens.join(' ');
+  }).filter(function(x){ return x !== ''; }).join(', ');
+}
+function rewriteCSS(css, selfBase, urlMap, cidMap){
+  const base = selfBase && String(selfBase).indexOf('blob:') !== 0 ? selfBase : '';
+  return String(css)
+    .replace(/url\(\s*(['"]?)([^'")]+?)\1\s*\)/gi, function(m, q, u){
+      const mapped = resolveResource(u, base, urlMap, cidMap);
+      return mapped ? 'url("' + mapped + '")' : m;
+    })
+    .replace(/@import\s+(['"])([^'"]+)\1/gi, function(m, q, u){
+      const mapped = resolveResource(u, base, urlMap, cidMap);
+      return mapped ? '@import "' + mapped + '"' : m;
+    });
+}
+</script>
+
+<script id="mime-view">
+let hookBlobUrl = function(u){ return u; };
+const MIME_VIEW_SANITIZE_META = ['content-type', 'content-security-policy', 'x-ua-compatible', 'refresh'];
+
+function buildRewrittenDocument(htmlText, base, urlMap, cidMap){
+  const doc = new DOMParser().parseFromString(htmlText, 'text/html');
+  for(const el of Array.from(doc.querySelectorAll('meta'))){
+    const he = (el.getAttribute('http-equiv') || '').trim().toLowerCase();
+    if(el.hasAttribute('charset') || MIME_VIEW_SANITIZE_META.indexOf(he) !== -1) el.remove();
+  }
+  const head = doc.head || doc.documentElement;
+  const metaEl = doc.createElement('meta');
+  metaEl.setAttribute('charset', 'utf-8');
+  head.insertBefore(metaEl, head.firstChild);
+  const existingBase = doc.querySelector('base');
+  if(base){
+    let baseEl = existingBase;
+    if(!baseEl){ baseEl = doc.createElement('base'); head.insertBefore(baseEl, metaEl.nextSibling); }
+    baseEl.setAttribute('href', base);
+  } else if(!existingBase){
+    const baseEl = doc.createElement('base');
+    baseEl.setAttribute('href', './');
+    head.insertBefore(baseEl, metaEl.nextSibling);
+  }
+  rewriteDocument(doc, base, urlMap, cidMap);
+  return doc;
+}
+function rewriteDocument(doc, base, urlMap, cidMap){
+  const tagAttrs = [
+    ['img', ['src', 'srcset', 'longdesc']],
+    ['image', ['href', 'xlink:href']],
+    ['source', ['src', 'srcset']],
+    ['video', ['src', 'poster']],
+    ['audio', ['src']],
+    ['track', ['src']],
+    ['embed', ['src']],
+    ['object', ['data']],
+    ['input', ['src']],
+    ['iframe', ['src']],
+    ['frame', ['src']],
+    ['portal', ['src']],
+    ['link', ['href', 'imagesrcset']],
+    ['script', ['src', 'integrity']],
+    ['use', ['href', 'xlink:href']],
+    ['table,td,th,tr,body', ['background']]
+  ];
+  for(const pair of tagAttrs){
+    for(const el of Array.from(doc.querySelectorAll(pair[0]))){
+      for(const a of pair[1]){
+        if(a === 'integrity'){
+          el.removeAttribute('integrity');
+          el.removeAttribute('crossorigin');
+          continue;
+        }
+        const v = el.getAttribute(a);
+        if(!v) continue;
+        if(a === 'srcset' || a === 'imagesrcset'){
+          el.setAttribute(a, rewriteSrcset(v, base, urlMap, cidMap));
+        } else {
+          const mapped = resolveResource(v, base, urlMap, cidMap);
+          if(mapped) el.setAttribute(a, mapped);
+        }
+      }
+    }
+  }
+  for(const el of Array.from(doc.querySelectorAll('a[href], area[href]'))){
+    const v = el.getAttribute('href');
+    if(!v) continue;
+    if(v[0] === '#') continue;
+    const mapped = resolveResource(v, base, urlMap, cidMap);
+    if(mapped){ el.setAttribute('href', mapped); }
+    else if(!/^[a-z][a-z0-9+.-]*:/i.test(v)){
+      try { el.setAttribute('href', new URL(v, base || 'file:///').href); } catch(e){}
+    }
+  }
+  for(const el of Array.from(doc.querySelectorAll('style'))){
+    const t = el.textContent;
+    if(t) el.textContent = rewriteCSS(t, base, urlMap, cidMap);
+  }
+  for(const el of Array.from(doc.querySelectorAll('[style]'))){
+    const s = el.getAttribute('style');
+    if(s && s.indexOf('url(') !== -1) el.setAttribute('style', rewriteCSS(s, base, urlMap, cidMap));
+  }
+}
+function serializeDocument(doc){
+  return (doc.doctype ? '<!DOCTYPE html>\n' : '') + doc.documentElement.outerHTML;
+}
+function decodeTextAuto(bytes){
+  try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+  catch(e){}
+  try { return new TextDecoder('gb18030', { fatal: false }).decode(bytes); }
+  catch(e){}
+  return latin1ToString(bytes);
+}
+function decodeHtmlAuto(bytes){
+  const probe = new TextDecoder('utf-8', { fatal: false }).decode(bytes.subarray(0, 4096));
+  const m = probe.match(/charset\s*=\s*["']?\s*([A-Za-z0-9_:-]+)/i);
+  const label = m ? m[1].toLowerCase() : '';
+  if(!label || label === 'utf-8' || label === 'utf8' || label === 'unicode-1-1-utf-8'){
+    return decodeTextAuto(bytes);
+  }
+  try { return new TextDecoder(label, { fatal: false }).decode(bytes); }
+  catch(e){ return decodeTextAuto(bytes); }
+}
+function isBinaryPlist(bytes){
+  return bytes.length >= 8 && bytes[0] === 0x62 && bytes[1] === 0x70 && bytes[2] === 0x6c && bytes[3] === 0x69 && bytes[4] === 0x73 && bytes[5] === 0x74;
+}
+function openMimeArchive(raw, boundary, parts, filename){
+  if(!parts.length) throw new Error('未能从文件中解析出内容段');
+  let snapshot = '';
+  const firstDelim = raw.indexOf('--' + boundary);
+  const head = firstDelim === -1 ? raw.slice(0, 16384) : raw.slice(0, firstDelim);
+  const sm = head.match(/(?:^|\n)[ \t]*(?:x-)?snapshot-content-location:[ \t]*([^\r\n]+)/i);
+  if(sm) snapshot = sm[1].trim();
+
+  const items = parts.map(function(s){
+    const p = parseMimePart(s);
+    const ct = parseContentType(p.headers['content-type']);
+    const isText = isTextType(ct.type);
+    const body = decodeBody(p.body, p.headers['content-transfer-encoding'], ct.params.charset, isText);
+    return { ct: ct, isText: isText, body: body, location: (p.headers['content-location'] || '').trim(), cid: (p.headers['content-id'] || '').trim(), keys: [], blobUrl: null };
+  });
+
+  const root = items.find(function(i){ return i.ct.type === 'text/html'; }) ||
+    items.find(function(i){ return i.isText; }) ||
+    items[0];
+  const base = root.location || snapshot || '';
+
+  const urlMap = new Map();
+  const cidMap = new Map();
+  function fillMap(it){
+    for(const k of it.keys) urlMap.set(k, it.blobUrl);
+    if(it.cid) cidMap.set(cidKey(it.cid), it.blobUrl);
+  }
+  function makeBlob(it, payload){
+    it.blobUrl = hookBlobUrl(URL.createObjectURL(new Blob([payload], { type: it.ct.type || 'application/octet-stream' })));
+    fillMap(it);
+  }
+
+  for(const it of items) it.keys = locationKeys(it.location, base);
+
+  for(const it of items){
+    if(it === root || it.blobUrl || (!it.keys.length && !it.cid)) continue;
+    if(!it.isText) makeBlob(it, it.body.bytes);
+  }
+  for(const it of items){
+    if(it === root || it.blobUrl || it.ct.type !== 'text/css') continue;
+    makeBlob(it, rewriteCSS(it.body.text || '', it.keys[0] || base, urlMap, cidMap));
+  }
+  for(const it of items){
+    if(it === root || it.blobUrl || it.ct.type !== 'text/html') continue;
+    makeBlob(it, serializeDocument(buildRewrittenDocument(it.body.text || '', it.keys[0] || base, urlMap, cidMap)));
+  }
+  for(const it of items){
+    if(it === root || it.blobUrl || (!it.keys.length && !it.cid)) continue;
+    if(it.isText) makeBlob(it, it.body.text || '');
+  }
+
+  const resCount = items.filter(function(i){ return i.blobUrl && i !== root; }).length;
+  const meta = { title: filename, source: snapshot || root.location || '', note: '资源 ' + resCount + ' / 共 ' + items.length + ' 段' };
+
+  if(root.ct.type === 'text/html'){
+    const doc = buildRewrittenDocument(root.body.text || '', base, urlMap, cidMap);
+    const url = hookBlobUrl(URL.createObjectURL(new Blob([serializeDocument(doc)], { type: 'text/html;charset=utf-8' })));
+    return { url: url, meta: meta };
+  }
+  if(root.isText){
+    const url = hookBlobUrl(URL.createObjectURL(new Blob([root.body.text || ''], { type: 'text/plain;charset=utf-8' })));
+    return { url: url, meta: meta };
+  }
+  if(!root.blobUrl) makeBlob(root, root.body.bytes);
+  return { url: root.blobUrl, meta: meta };
+}
+function renderLocalHtml(bytes, filename){
+  const text = decodeHtmlAuto(bytes);
+  const url = hookBlobUrl(URL.createObjectURL(new Blob([serializeDocument(buildRewrittenDocument(text, '', new Map(), new Map()))], { type: 'text/html;charset=utf-8' })));
+  return { url: url, meta: { title: filename } };
+}
+</script>
+
+<script id="app">
+(function(){
+  const $ = function(s){ return document.querySelector(s); };
+  const pickBtn = $('#pickBtn');
+  const fileInput = $('#fileInput');
+  const dropZone = $('#dropZone');
+  const pickerSection = $('#picker');
+  const viewerSection = $('#viewer');
+  const frameWrap = $('#frameWrap');
+  const fileInfo = $('#fileInfo');
+  const statusEl = $('#status');
+  const jsToggle = $('#jsToggle');
+  const openTabBtn = $('#openTab');
+  const closeBtn = $('#closeBtn');
+
+  const createdUrls = [];
+  let currentBlobUrl = null;
+  function track(url){
+    createdUrls.push(url);
+    return url;
+  }
+  hookBlobUrl = track;
+
+  function resetCreatedUrls(){
+    for(const u of createdUrls){
+      try { URL.revokeObjectURL(u); } catch(e){}
+    }
+    createdUrls.length = 0;
+  }
+  function setStatus(msg, isError){
+    statusEl.textContent = msg || '';
+    statusEl.classList.toggle('error', !!isError);
+  }
+  function showPicker(show){
+    pickerSection.hidden = !show;
+    viewerSection.hidden = show;
+  }
+  function renderFrame(url, withJs){
+    frameWrap.innerHTML = '';
+    const f = document.createElement('iframe');
+    f.id = 'frame';
+    f.setAttribute('sandbox', withJs ? 'allow-same-origin allow-scripts allow-popups allow-forms' : 'allow-same-origin allow-popups');
+    f.setAttribute('src', url);
+    frameWrap.appendChild(f);
+  }
+  function showViewer(url, meta){
+    currentBlobUrl = url;
+    fileInfo.textContent = '';
+    const b = document.createElement('strong');
+    b.textContent = meta.title || '(未命名)';
+    fileInfo.appendChild(b);
+    if(meta.note){
+      const s = document.createElement('span');
+      s.className = 'note';
+      s.textContent = meta.note;
+      fileInfo.appendChild(s);
+    }
+    if(meta.source){
+      fileInfo.appendChild(document.createTextNode('  原始页面：'));
+      const a = document.createElement('a');
+      a.href = meta.source;
+      a.target = '_blank';
+      a.rel = 'noreferrer noopener';
+      a.textContent = meta.source.length > 60 ? meta.source.slice(0, 60) + '…' : meta.source;
+      fileInfo.appendChild(a);
+    }
+    renderFrame(url, jsToggle.checked);
+    showPicker(false);
+    setStatus('');
+  }
+
+  function openDocument(bytes, filename){
+    const lower = filename.toLowerCase();
+    if(isBinaryPlist(bytes) || lower.indexOf('.webarchive') !== -1) throw new Error('暂不支持 Safari 的 .webarchive 格式，请改用浏览器「另存为→单文件网页 (.mhtml)」');
+    const raw = latin1ToString(bytes);
+    if(lower.indexOf('.txt') !== -1 || lower.indexOf('.log') !== -1 || lower.indexOf('.json') !== -1 || lower.indexOf('.csv') !== -1){
+      showViewer(track(URL.createObjectURL(new Blob([decodeTextAuto(bytes)], { type: 'text/plain;charset=utf-8' }))), { title: filename });
+      return;
+    }
+    const boundary = findBoundary(raw);
+    const parts = boundary ? splitMimeParts(raw, boundary) : [];
+    const looksMime = parts.length > 0 && parts.some(function(p){ return /(^|\r?\n)content-type:[^\r\n]*\/[^\r\n]*/i.test(p); });
+    if(looksMime){
+      const r = openMimeArchive(raw, boundary, parts, filename);
+      showViewer(r.url, r.meta);
+      return;
+    }
+    const isHtml = lower.indexOf('.html') !== -1 || lower.indexOf('.htm') !== -1 || lower.indexOf('.xhtml') !== -1;
+    if(isHtml){
+      const r = renderLocalHtml(bytes, filename);
+      showViewer(r.url, r.meta);
+      return;
+    }
+    showViewer(track(URL.createObjectURL(new Blob([decodeTextAuto(bytes)], { type: 'text/plain;charset=utf-8' }))), { title: filename });
+  }
+
+  async function handleFile(file){
+    resetCreatedUrls();
+    currentBlobUrl = null;
+    let bytes;
+    try { bytes = new Uint8Array(await file.arrayBuffer()); }
+    catch(e){ setStatus('读取文件失败：' + e.message, true); return; }
+    try {
+      openDocument(bytes, file.name || '');
+    } catch(e){
+      setStatus('打开失败：' + (e && e.message ? e.message : String(e)), true);
+      showPicker(true);
+      frameWrap.innerHTML = '';
+      currentBlobUrl = null;
+    }
+  }
+
+  pickBtn.addEventListener('click', function(){ fileInput.click(); });
+  fileInput.addEventListener('change', function(){
+    const f = fileInput.files && fileInput.files[0];
+    if(f) handleFile(f);
+    fileInput.value = '';
+  });
+  ['dragover', 'dragenter'].forEach(function(ev){
+    dropZone.addEventListener(ev, function(e){
+      e.preventDefault();
+      dropZone.classList.add('dragover');
+    });
+  });
+  dropZone.addEventListener('dragleave', function(){ dropZone.classList.remove('dragover'); });
+  dropZone.addEventListener('drop', function(e){
+    e.preventDefault();
+    dropZone.classList.remove('dragover');
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if(f) handleFile(f);
+  });
+  window.addEventListener('dragover', function(e){ e.preventDefault(); });
+  window.addEventListener('drop', function(e){
+    e.preventDefault();
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if(f) handleFile(f);
+  });
+  jsToggle.addEventListener('change', function(){
+    if(currentBlobUrl) renderFrame(currentBlobUrl, jsToggle.checked);
+  });
+  openTabBtn.addEventListener('click', function(){
+    if(currentBlobUrl) window.open(currentBlobUrl, '_blank');
+  });
+  closeBtn.addEventListener('click', function(){
+    resetCreatedUrls();
+    currentBlobUrl = null;
+    frameWrap.innerHTML = '';
+    showPicker(true);
+    setStatus('');
+  });
+})();
+</script>
+</body>
+</html>

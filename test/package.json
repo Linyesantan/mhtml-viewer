@@ -1,0 +1,14 @@
+{
+  "name": "mhtml-viewer-tests",
+  "version": "1.0.0",
+  "description": "Tests for mhtml-viewer",
+  "private": true,
+  "scripts": {
+    "test": "node run-test.mjs && node run-view-test.mjs"
+  },
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "linkedom": "^0.18.11"
+  }
+}

@@ -1,0 +1,33 @@
+From: <Saved by Blink>
+Snapshot-Content-Location: https://sample.local/page
+MIME-Version: 1.0
+Content-Type: multipart/related; type="text/html"; boundary="----MultipartBoundary-9aBcDeFgHi----"
+
+------MultipartBoundary-9aBcDeFgHi----
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+Content-Location: https://sample.local/page
+
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>示例页面</title>
+<link rel="stylesheet" href="https://sample.local/style.css">
+</head><body>
+<h1>MHTML 查看器示例页面</h1>
+<p>如果你能看到这张图片和样式，说明解析正常。</p>
+<img src="https://sample.local/dot.png" alt="红点">
+<p style="background:url(https://sample.local/dot.png)">内联样式图片</p>
+<a href="https://example.com/">外部链接</a>
+</body></html>
+------MultipartBoundary-9aBcDeFgHi----
+Content-Type: text/css
+Content-Transfer-Encoding: 8bit
+Content-Location: https://sample.local/style.css
+
+body{font-family:sans-serif;max-width:640px;margin:40px auto;color:#222}h1{color:#4f46e5}img{width:20px;height:20px}
+------MultipartBoundary-9aBcDeFgHi----
+Content-Type: image/png
+Content-Transfer-Encoding: base64
+Content-Location: https://sample.local/dot.png
+
+iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAFUlEQVR42mNk+M+ACzDhVQ4CAAvwATkP0aAAAAAAAElFTkSuQmCC
+------MultipartBoundary-9aBcDeFgHi------
