@@ -69,6 +69,6 @@ npm test
 - 存档内的 `meta refresh` / CSP 等 http-equiv 会被剔除，避免跳转干扰
 - server.js 只做静态文件服务，带路径穿越防护，仅建议在本地使用
 
-## License
+## 开源协议
 
 [MIT](LICENSE)
